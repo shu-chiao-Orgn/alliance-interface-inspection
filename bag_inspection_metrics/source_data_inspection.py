@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import sys
+import threading
 from collections import defaultdict
+from contextlib import contextmanager
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -48,38 +52,44 @@ def _as_str_field(val: Any) -> str:
     return str(val)
 
 
-def _frame_preview(msg: Any, msgtype: str, max_len: int = 160) -> str:
+def _frame_preview(msg: Any, max_len: int = 160) -> str:
     """Short frame summary from the first decoded message on a connection."""
-    bn = ros_type_basename(msgtype)
-    if bn == "TFMessage":
-        try:
-            transforms = getattr(msg, "transforms", None) or []
-            bits: list[str] = []
-            seen: set[str] = set()
-            for t in transforms:
-                h = _as_str_field(getattr(getattr(t, "header", None), "frame_id", ""))
-                cf = _as_str_field(getattr(t, "child_frame_id", ""))
-                s = f"{h}→{cf}" if h or cf else ""
-                if s and s not in seen:
-                    seen.add(s)
-                    bits.append(s)
-            if not bits:
-                return "(no transforms)"
-            out = ", ".join(bits)
-        except Exception:
-            return "(?)"
-    else:
-        try:
-            hdr = getattr(msg, "header", None)
-            out = _as_str_field(getattr(hdr, "frame_id", "")) if hdr is not None else ""
-        except Exception:
-            out = ""
-        if not out:
-            out = "(n/a)"
+    try:
+        hdr = getattr(msg, "header", None)
+        out = _as_str_field(getattr(hdr, "frame_id", "")) if hdr is not None else ""
+    except Exception:
+        out = ""
+    if not out:
+        out = "(n/a)"
 
     if len(out) > max_len:
         return out[: max_len - 3] + "..."
     return out
+
+
+@contextmanager
+def _loading_spinner(message: str) -> Iterator[None]:
+    """Show a simple | / - \\ animation on one line while work runs in the block."""
+    stop = threading.Event()
+    chars = "|/-\\"
+
+    def spin() -> None:
+        i = 0
+        pad = len(message) + 4
+        while not stop.wait(0.1):
+            sys.stdout.write(f"\r{message} {chars[i % len(chars)]} ")
+            sys.stdout.flush()
+            i += 1
+        sys.stdout.write("\r" + " " * pad + "\r")
+        sys.stdout.flush()
+
+    thread = threading.Thread(target=spin, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=2.0)
 
 
 def detect_bag_format(bag_path: str) -> str:
@@ -112,7 +122,8 @@ def plot_standard_sensor_preview(file_path: str, *, preview: str = "html") -> No
     typestore = get_typestore_for_format(bag_format)
 
     with AnyReader([path], default_typestore=typestore) as reader:
-        figures, notes = inspect_standard_topics_figure(reader)
+        with _loading_spinner("Std-topic plots"):
+            figures, notes = inspect_standard_topics_figure(reader)
         emit_notes(notes)
 
     mode = preview.strip().lower()
@@ -168,21 +179,28 @@ def main(file_path: str, preview: str = "html") -> None:
         std_ids = {c.id for _, c in std_topics}
         msg_counts: dict[int, int] = defaultdict(int)
         frame_by_id: dict[int, str] = {}
-        for conn, _ts, raw in reader.messages():
-            cid = conn.id
-            msg_counts[cid] += 1
-            if cid in std_ids and cid not in frame_by_id:
-                try:
-                    msg = reader.deserialize(raw, conn.msgtype)
-                    frame_by_id[cid] = _frame_preview(msg, conn.msgtype)
-                except Exception:
-                    frame_by_id[cid] = "(decode error)"
+        with _loading_spinner("Scanning bag"):
+            for conn, _ts, raw in reader.messages():
+                cid = conn.id
+                msg_counts[cid] += 1
+                if cid in std_ids and cid not in frame_by_id:
+                    if ros_type_basename(conn.msgtype) == "TFMessage":
+                        frame_by_id[cid] = "-"
+                    else:
+                        try:
+                            msg = reader.deserialize(raw, conn.msgtype)
+                            frame_by_id[cid] = _frame_preview(msg)
+                        except Exception:
+                            frame_by_id[cid] = "(decode error)"
 
         print("\nStandard topics details:")
         for topic, conn in std_topics:
             n = int(msg_counts.get(conn.id, 0))
             fr = frame_by_id.get(conn.id, "(no messages)")
-            print(f"  Topic: {topic}, MsgType: {conn.msgtype}, Frame: {fr}, MsgNums: {n}")
+            if ros_type_basename(conn.msgtype) == "TFMessage":
+                print(f"  Topic: {topic}, MsgType: {conn.msgtype}, MsgNums: {n}")
+            else:
+                print(f"  Topic: {topic}, MsgType: {conn.msgtype}, Frame: {fr}, MsgNums: {n}")
 
     plot_standard_sensor_preview(str(path), preview=preview)
 
