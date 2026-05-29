@@ -42,6 +42,23 @@ Replace **`/path/to/KJ_ros_interface`** with the folder where you unpacked this 
 | `plotly` | Tries to open each chart in a Plotly viewer (may not work on headless machines). |
 | `both` | Browser HTML and Plotly viewer. |
 
+## Static TF transforms
+
+Print each `/tf_static` frame pose relative to a base frame (default `base_link`):
+
+```bash
+python static_tf_transforms.py -f /path/to/rosbag_folder
+python static_tf_transforms.py -f /path/to/rosbag_folder --base base_link
+python static_tf_transforms.py -f /path/to/rosbag_folder --format quat
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--base` | `base_link` | Reference frame (e.g. `base_link`, `map`) |
+| `--format` | `table` | `table`, `matrix`, `quat`, `rpy`, `all`, or `json` (comma-separated) |
+| `--frames` | all | Only show named frames |
+| `--precision` | `4` | Decimal places |
+
 ## Plot Info
 
 ### IMU (`sensor_msgs/msg/Imu`)
